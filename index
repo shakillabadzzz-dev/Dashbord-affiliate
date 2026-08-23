@@ -1,35 +1,30 @@
-const functions = require("firebase-functions");
-const admin = require("firebase-admin");
-admin.initializeApp();
-
-exports.processWithdrawal = functions.firestore
-  .document("withdrawals/{withdrawalId}")
-  .onUpdate(async (change, context) => {
-    const newData = change.after.data();
-    const oldData = change.before.data();
-
-    // Jika admin tukar PENDING -> APPROVED
-    if (oldData.status === "PENDING" && newData.status === "APPROVED") {
-      const walletRef = admin.firestore().collection("wallets").where("userId", "==", newData.userId);
-      const walletSnap = await walletRef.get();
-      
-      if (!walletSnap.empty) {
-        const walletDoc = walletSnap.docs[0];
-        const currentBalance = walletDoc.data().availableBalance;
-        
-        // Tolak baki secara selamat di server
-        await walletDoc.ref.update({
-          availableBalance: currentBalance - newData.amount
-        });
-        
-        // Rekod transaksi
-        await admin.firestore().collection("transactions").add({
-          userId: newData.userId,
-          type: "WITHDRAWAL",
-          amount: newData.amount,
-          status: "COMPLETED",
-          date: admin.firestore.FieldValue.serverTimestamp()
-        });
-      }
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Fungsi check adakah user ini Admin
+    function isAdmin() {
+      return request.auth != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
-  });
+
+    // USER RULES
+    match /users/{userId} {
+      allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // WALLET RULES (Hanya admin boleh ubah)
+    match /wallets/{walletId} {
+      allow read: if request.auth != null && (request.auth.uid == walletId || isAdmin());
+      allow write: if isAdmin(); 
+      allow create: if request.auth != null; // Benarkan wallet dicipta masa register
+    }
+    
+    // WITHDRAWAL RULES
+    match /withdrawals/{docId} {
+      allow read: if request.auth != null && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAdmin(); // Admin sahaja boleh approve/reject
+    }
+  }
+}

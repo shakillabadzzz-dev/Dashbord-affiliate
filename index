@@ -1,0 +1,35 @@
+const functions = require("firebase-functions");
+const admin = require("firebase-admin");
+admin.initializeApp();
+
+exports.processWithdrawal = functions.firestore
+  .document("withdrawals/{withdrawalId}")
+  .onUpdate(async (change, context) => {
+    const newData = change.after.data();
+    const oldData = change.before.data();
+
+    // Jika admin tukar PENDING -> APPROVED
+    if (oldData.status === "PENDING" && newData.status === "APPROVED") {
+      const walletRef = admin.firestore().collection("wallets").where("userId", "==", newData.userId);
+      const walletSnap = await walletRef.get();
+      
+      if (!walletSnap.empty) {
+        const walletDoc = walletSnap.docs[0];
+        const currentBalance = walletDoc.data().availableBalance;
+        
+        // Tolak baki secara selamat di server
+        await walletDoc.ref.update({
+          availableBalance: currentBalance - newData.amount
+        });
+        
+        // Rekod transaksi
+        await admin.firestore().collection("transactions").add({
+          userId: newData.userId,
+          type: "WITHDRAWAL",
+          amount: newData.amount,
+          status: "COMPLETED",
+          date: admin.firestore.FieldValue.serverTimestamp()
+        });
+      }
+    }
+  });
